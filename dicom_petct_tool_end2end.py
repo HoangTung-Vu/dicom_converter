@@ -445,39 +445,35 @@ def step3_convert_to_nifti(
                     name_prefix = f"{pid}_{date_sub}"
                     nii_out = os.path.join(out_date_path, f"{name_prefix}_{safe_prefix}.nii.gz")
 
-                    if os.path.exists(nii_out):
-                        log_fn(f"  Skip (exists): {os.path.basename(nii_out)}")
-                    else:
-                        with tempfile.TemporaryDirectory() as tmp:
-                            tmp_out = os.path.join(tmp, safe_prefix)
-                            nii_path, ok, msg = run_dcm2niix(prefix_path, tmp_out, safe_prefix)
-                            if nii_path and ok:
-                                shutil.move(nii_path, nii_out)
-                                log_fn(f"  {modality}  → {os.path.basename(nii_out)}")
-                            else:
-                                log_fn(f"  [WARN] {prefix_sub} conversion failed: {msg[:200]}")
-                                continue
+                    with tempfile.TemporaryDirectory() as tmp:
+                        tmp_out = os.path.join(tmp, safe_prefix)
+                        nii_path, ok, msg = run_dcm2niix(prefix_path, tmp_out, safe_prefix)
+                        if nii_path and ok:
+                            shutil.move(nii_path, nii_out)
+                            log_fn(f"  {modality}  → {os.path.basename(nii_out)}")
+                        else:
+                            log_fn(f"  [WARN] {prefix_sub} conversion failed: {msg[:200]}")
+                            continue
 
                     if modality == "PT":
                         suv_out = os.path.join(out_date_path, f"{name_prefix}_{safe_prefix}_SUV.nii.gz")
-                        if not os.path.exists(suv_out):
-                            dcms = sort_by_instance_number([
-                                os.path.join(prefix_path, f) for f in os.listdir(prefix_path)
-                                if f.lower().endswith(".dcm")
-                            ])
-                            if dcms:
-                                try:
-                                    pet_img = nib.load(nii_out)
-                                    pet_raw = pet_img.get_fdata()
-                                    suv, estimated = compute_suv(pet_raw, dcms[0])
-                                    nib.save(
-                                        nib.Nifti1Image(suv.astype(np.float32), pet_img.affine, pet_img.header),
-                                        suv_out,
-                                    )
-                                    note = " [estimated params]" if estimated else ""
-                                    log_fn(f"  SUV → {os.path.basename(suv_out)}{note}")
-                                except Exception as e:
-                                    log_fn(f"  [WARN] SUV computation failed for {prefix_sub}: {e}")
+                        dcms = sort_by_instance_number([
+                            os.path.join(prefix_path, f) for f in os.listdir(prefix_path)
+                            if f.lower().endswith(".dcm")
+                        ])
+                        if dcms:
+                            try:
+                                pet_img = nib.load(nii_out)
+                                pet_raw = pet_img.get_fdata()
+                                suv, estimated = compute_suv(pet_raw, dcms[0])
+                                nib.save(
+                                    nib.Nifti1Image(suv.astype(np.float32), pet_img.affine, pet_img.header),
+                                    suv_out,
+                                )
+                                note = " [estimated params]" if estimated else ""
+                                log_fn(f"  SUV → {os.path.basename(suv_out)}{note}")
+                            except Exception as e:
+                                log_fn(f"  [WARN] SUV computation failed for {prefix_sub}: {e}")
 
         except Exception as e:
             log_fn(f"  [ERROR] {e}")

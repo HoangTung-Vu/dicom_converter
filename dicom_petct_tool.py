@@ -172,7 +172,7 @@ def extract_metadata(dcm_path) -> dict[str, Any]:
         "institution_name": _g("InstitutionName"),
     }
 
-_METADATA_FILENAME = "metadata.json"
+# _METADATA_FILENAME = "metadata.json"  # Removed as per request
 
 def detect_modality_from_dir(dir_path):
     """Return 'CT', 'PT', or 'UN' by reading first DICOM's Modality tag.
@@ -202,14 +202,25 @@ def detect_modality_from_dir(dir_path):
 # ---------------------------------------------------------------------------
 
 def step1_2_preprocess_and_anonymize(input_dir, mode, anonymize, log_fn=print):
-    log_fn(f"\n=== Step 1 & 2: Preprocess & Anonymize (Anonymize={anonymize}) ===")
+    log_fn(f"\n=== Step 1: Preprocess & Anonymize (Anonymize={anonymize}) ===")
     input_dir_path = os.path.abspath(input_dir)
     
     if mode == "single":
-        mapping_csv = os.path.join(os.path.dirname(input_dir_path), "mapping.csv")
+        # input_dir_path is .../GP/P/S
+        # parent is .../GP/P
+        # mapping_csv at same level as parent P (inside GP)
+        # and named after parent P
+        parent_path = os.path.dirname(input_dir_path)
+        parent_name = os.path.basename(parent_path)
+        grandparent_path = os.path.dirname(parent_path)
+        mapping_csv = os.path.join(grandparent_path, f"{parent_name}_mapping.csv")
         exam_dirs = [input_dir_path]
     else:
-        mapping_csv = os.path.join(input_dir_path, "mapping.csv")
+        # input_dir_path is .../Parent/Batch
+        # mapping_csv at same level as batch (.../Parent)
+        parent = os.path.dirname(input_dir_path)
+        base = os.path.basename(input_dir_path)
+        mapping_csv = os.path.join(parent, f"{base}_mapping.csv")
         exam_dirs = sorted(
             os.path.join(input_dir_path, d) for d in os.listdir(input_dir_path) 
             if os.path.isdir(os.path.join(input_dir_path, d))
@@ -220,6 +231,7 @@ def step1_2_preprocess_and_anonymize(input_dir, mode, anonymize, log_fn=print):
         return None
 
     patient_mapping = {}
+    existing_pids = set()
     max_id = 0
     if os.path.exists(mapping_csv):
         try:
@@ -228,6 +240,8 @@ def step1_2_preprocess_and_anonymize(input_dir, mode, anonymize, log_fn=print):
                 for row in reader:
                     pname = row.get("PatientName", "")
                     pid = row.get("PID", "")
+                    if pid:
+                        existing_pids.add(pid)
                     if pname and pid:
                         patient_mapping[pname] = pid
                         try:
@@ -249,11 +263,16 @@ def step1_2_preprocess_and_anonymize(input_dir, mode, anonymize, log_fn=print):
     target_bases_set = set()
     
     for folder in exam_dirs:
-        if os.path.exists(os.path.join(folder, _METADATA_FILENAME)):
-            log_fn(f"\n[SKIP] {os.path.basename(folder)} (Already processed)")
+        folder_base = os.path.basename(folder)
+        if folder_base in existing_pids:
+            log_fn(f"\n[SKIP] {folder_base} (PID already in CSV)")
             continue
             
-        log_fn(f"\n[Scanning {os.path.basename(folder)}]")
+        if any(os.path.isdir(os.path.join(folder, d)) for d in os.listdir(folder)):
+            log_fn(f"\n[SKIP] {folder_base} (Contains subdirectories)")
+            continue
+
+        log_fn(f"\n[Scanning {folder_base}]")
         dicom_files = []
         for root, _, files in os.walk(folder):
             for f in files:
@@ -359,10 +378,11 @@ def step1_2_preprocess_and_anonymize(input_dir, mode, anonymize, log_fn=print):
         if anonymize:
             meta["assigned_pid"] = os.path.basename(tbase)
             
-        meta_path = os.path.join(tbase, _METADATA_FILENAME)
-        with open(meta_path, "w", encoding="utf-8") as fh:
-            json.dump(meta, fh, indent=2, ensure_ascii=False, default=str)
-        log_fn(f"  metadata.json → {meta_path}")
+        # Metadata generation removed as per request
+        # meta_path = os.path.join(tbase, _METADATA_FILENAME)
+        # with open(meta_path, "w", encoding="utf-8") as fh:
+        #     json.dump(meta, fh, indent=2, ensure_ascii=False, default=str)
+        # log_fn(f"  metadata.json → {meta_path}")
         
         if anonymize:
             pid_str = meta["assigned_pid"]
@@ -399,7 +419,7 @@ def step1_2_preprocess_and_anonymize(input_dir, mode, anonymize, log_fn=print):
             writer.writerows(new_metadata_rows)
         log_fn(f"\n  CSV mapping updated → {mapping_csv}")
 
-    log_fn("\n✓ Step 1 & 2 done.")
+    log_fn("\n✓ Step 1 done.")
     
     if mode == "single" and len(target_bases_set) == 1:
         return list(target_bases_set)[0]
@@ -413,25 +433,35 @@ def step3_convert_to_nifti(
     input_dir, output_dir, mode, log_fn=print, progress_fn=None, cancel_event=None,
 ):
     """Step 3 entry point. Converts NIfTI to a separate output directory."""
-    log_fn(f"\n=== Step 3: Convert to NIfTI → {output_dir} ===")
+    log_fn(f"\n=== Step 2: Convert to NIfTI → {output_dir} ===")
     input_dir_path = os.path.abspath(input_dir)
     
     if mode == "single":
+        # input_dir_path is .../GP/P/S
+        # mapping_csv in grandparent GP, named after parent P
+        parent_path = os.path.dirname(input_dir_path)
+        parent_name = os.path.basename(parent_path)
+        grandparent_path = os.path.dirname(parent_path)
+        mapping_csv = os.path.join(grandparent_path, f"{parent_name}_mapping.csv")
         patient_dirs = [input_dir_path]
-        mapping_csv = os.path.join(os.path.dirname(input_dir_path), "mapping.csv")
     else:
+        # input_dir_path is .../Parent/Batch
+        # mapping_csv at same level as batch (.../Parent)
+        parent = os.path.dirname(input_dir_path)
+        base = os.path.basename(input_dir_path)
+        mapping_csv = os.path.join(parent, f"{base}_mapping.csv")
         patient_dirs = [os.path.join(input_dir_path, d) for d in sorted(os.listdir(input_dir_path)) 
                         if os.path.isdir(os.path.join(input_dir_path, d))]
-        mapping_csv = os.path.join(input_dir_path, "mapping.csv")
 
     if not patient_dirs:
         log_fn("  [ERROR] No patient folders found")
         return
 
     os.makedirs(output_dir, exist_ok=True)
-    if os.path.exists(mapping_csv):
-        shutil.copy2(mapping_csv, os.path.join(output_dir, "mapping.csv"))
-        log_fn(f"  Copied mapping.csv to output")
+    # Mapping copy removed as per request
+    # if os.path.exists(mapping_csv):
+    #     shutil.copy2(mapping_csv, os.path.join(output_dir, "mapping.csv"))
+    #     log_fn(f"  Copied mapping.csv to output")
 
     total = len(patient_dirs)
     log_fn(f"  Found {total} patient folder(s)")
@@ -444,11 +474,12 @@ def step3_convert_to_nifti(
         try:
             pid = os.path.basename(pdir)
             
-            meta_src = os.path.join(pdir, "metadata.json")
-            if os.path.exists(meta_src):
-                out_pid_path = os.path.join(output_dir, pid)
-                os.makedirs(out_pid_path, exist_ok=True)
-                shutil.copy2(meta_src, os.path.join(out_pid_path, "metadata.json"))
+            # Metadata copy removed as per request
+            # meta_src = os.path.join(pdir, "metadata.json")
+            # if os.path.exists(meta_src):
+            #     out_pid_path = os.path.join(output_dir, pid)
+            #     os.makedirs(out_pid_path, exist_ok=True)
+            #     shutil.copy2(meta_src, os.path.join(out_pid_path, "metadata.json"))
                 
             for date_sub in sorted(os.listdir(pdir)):
                 date_path = os.path.join(pdir, date_sub)
@@ -485,7 +516,11 @@ def step3_convert_to_nifti(
                                 continue
 
                     if modality == "PT":
-                        suv_out = os.path.join(out_date_path, f"{name_prefix}_{safe_prefix}_SUV.nii.gz")
+                        # Replace PET/PT with SUV in the safe_prefix
+                        suv_safe_prefix = re.sub(r'PET|PT', 'SUV', safe_prefix, flags=re.IGNORECASE)
+                        if suv_safe_prefix == safe_prefix:
+                            suv_safe_prefix = safe_prefix + "_SUV"
+                        suv_out = os.path.join(out_date_path, f"{name_prefix}_{suv_safe_prefix}.nii.gz")
                         if not os.path.exists(suv_out):
                             dcms = sort_by_instance_number([
                                 os.path.join(prefix_path, f) for f in os.listdir(prefix_path)
@@ -511,7 +546,7 @@ def step3_convert_to_nifti(
         if progress_fn:
             progress_fn(idx / total * 100)
 
-    log_fn("\n✓ Step 3 done.")
+    log_fn("\n✓ Step 2 done.")
 
 
 # ---------------------------------------------------------------------------
@@ -689,7 +724,7 @@ class App(tk.Tk):
         )
 
         # Step 1 & 2
-        frm1 = ttk.LabelFrame(self, text="Step 1 & 2 — Preprocess & Anonymize")
+        frm1 = ttk.LabelFrame(self, text="Step 1 — Preprocess & Anonymize")
         frm1.pack(fill="x", padx=8, pady=4)
         
         self.var_anon = tk.BooleanVar(value=False)
@@ -707,12 +742,12 @@ class App(tk.Tk):
         ).pack(anchor="w", padx=10, pady=(6, 2))
         
         self.btn_step1 = ttk.Button(
-            frm1, text="▶ Run Step 1 & 2", command=self._run_step1, width=18,
+            frm1, text="▶ Run Step 1", command=self._run_step1, width=18,
         )
         self.btn_step1.pack(anchor="w", padx=10, pady=(4, 8))
 
         # Step 3
-        frm3 = ttk.LabelFrame(self, text="Step 3 — Convert to NIfTI")
+        frm3 = ttk.LabelFrame(self, text="Step 2 — Convert to NIfTI")
         frm3.pack(fill="x", padx=8, pady=4)
         ttk.Label(
             frm3,
@@ -733,7 +768,7 @@ class App(tk.Tk):
         )
 
         self.btn_step3 = ttk.Button(
-            frm3, text="▶ Run Step 3", command=self._run_step3, width=18,
+            frm3, text="▶ Run Step 2", command=self._run_step3, width=18,
         )
         self.btn_step3.pack(anchor="w", padx=10, pady=(2, 8))
 
@@ -791,6 +826,20 @@ class App(tk.Tk):
         d = self._ask_dir("Select Input DICOM Directory", self.var_input.get().strip())
         if d:
             self.var_input.set(d)
+            # Set default output folder
+            mode = self.var_mode.get()
+            d_abs = os.path.abspath(d)
+            if mode == "batch":
+                parent = os.path.dirname(d_abs)
+                base = os.path.basename(d_abs)
+                self.var_output.set(os.path.join(parent, f"{base}_nii.gz"))
+            else: # single
+                # input is .../GP/P/S
+                # Output named after parent P and saved in grandparent GP
+                parent_path = os.path.dirname(d_abs)
+                parent_name = os.path.basename(parent_path)
+                grandparent_path = os.path.dirname(parent_path)
+                self.var_output.set(os.path.join(grandparent_path, f"{parent_name}_nii.gz"))
 
     def _browse_output(self):
         d = self._ask_dir("Select Output Directory", self.var_output.get().strip())

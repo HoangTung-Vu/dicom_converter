@@ -1,0 +1,13 @@
+name: dicom_converter
+channels:
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - numpy
+  - tk
+  - pip:
+      - pydicom>=2.4
+      - nibabel>=5.0
+      - SimpleITK>=2.3
+      - dcm2niix        # DICOM → NIfTI CLI tool (installs binary via pip)

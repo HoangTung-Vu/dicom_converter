@@ -91,14 +91,20 @@ sudo apt install dcm2niix
 Run in Anaconda Prompt (Windows):
 
 ```bat
+# Option 1: Use the automated script
+build_windows.bat
+
+# Option 2: Run manually
 conda activate dicom_converter
 pip install pyinstaller
 
+# Optional: Place dcm2niix.exe in this folder to bundle it
 pyinstaller ^
   --onefile ^
   --windowed ^
   --name DicomPetCtConverter ^
-  dicom_petct_tool.py
+  --add-binary "dcm2niix.exe;." ^
+  dicom_petct_tool_end2end.py
 ```
 
 Output: `dist\DicomPetCtConverter.exe`

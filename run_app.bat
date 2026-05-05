@@ -30,6 +30,6 @@ if %errorlevel% neq 0 (
 
 REM ---- Activate and run ----
 call conda activate %ENV_NAME%
-python "%SCRIPT_DIR%dicom_petct_tool.py"
+python "%SCRIPT_DIR%dicom_petct_tool_end2end.py"
 
 endlocal

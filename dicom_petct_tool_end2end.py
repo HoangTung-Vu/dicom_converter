@@ -97,10 +97,30 @@ def run_dcm2niix(src_dir, out_dir, filename_prefix):
         if f.endswith(".nii.gz") or f.endswith(".json"):
             os.remove(os.path.join(out_dir, f))
 
-    dcm2niix_bin = (
-        shutil.which("dcm2niix")
-        or os.path.join(os.path.dirname(sys.executable), "dcm2niix")
-    )
+    def find_dcm2niix():
+        # 1. Check if bundled via PyInstaller (_MEIPASS)
+        if hasattr(sys, "_MEIPASS"):
+            ext = ".exe" if sys.platform == "win32" else ""
+            bundled = os.path.join(sys._MEIPASS, "dcm2niix" + ext)
+            if os.path.exists(bundled):
+                return bundled
+        
+        # 2. Check PATH
+        path_bin = shutil.which("dcm2niix")
+        if path_bin:
+            return path_bin
+            
+        # 3. Check alongside executable
+        ext = ".exe" if sys.platform == "win32" else ""
+        local_bin = os.path.join(os.path.dirname(sys.executable), "dcm2niix" + ext)
+        if os.path.exists(local_bin):
+            return local_bin
+            
+        return None
+
+    dcm2niix_bin = find_dcm2niix()
+    if not dcm2niix_bin:
+        return None, False, "Error: dcm2niix not found in PATH or bundled."
     cmd = [
         dcm2niix_bin, "-z", "y",
         "-f", filename_prefix,
@@ -798,13 +818,28 @@ class App(tk.Tk):
 
     # ---- Helpers ----
 
+    def _get_dcm2niix(self):
+        if hasattr(sys, "_MEIPASS"):
+            ext = ".exe" if sys.platform == "win32" else ""
+            bundled = os.path.join(sys._MEIPASS, "dcm2niix" + ext)
+            if os.path.exists(bundled):
+                return bundled
+        path_bin = shutil.which("dcm2niix")
+        if path_bin:
+            return path_bin
+        ext = ".exe" if sys.platform == "win32" else ""
+        local_bin = os.path.join(os.path.dirname(sys.executable), "dcm2niix" + ext)
+        if os.path.exists(local_bin):
+            return local_bin
+        return None
+
     def _check_deps(self):
         missing = []
         if not PYDICOM_OK:
             missing.append("pydicom")
         if not NIBABEL_OK:
             missing.append("nibabel")
-        if not shutil.which("dcm2niix"):
+        if not self._get_dcm2niix():
             missing.append("dcm2niix")
         if missing:
             self.lbl_deps.config(text=f"Missing: {', '.join(missing)}")
@@ -937,7 +972,7 @@ class App(tk.Tk):
             missing.append("pydicom")
         if not NIBABEL_OK:
             missing.append("nibabel")
-        if not shutil.which("dcm2niix"):
+        if not self._get_dcm2niix():
             missing.append("dcm2niix")
         if missing:
             messagebox.showerror(

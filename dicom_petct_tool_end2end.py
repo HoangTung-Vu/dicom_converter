@@ -14,7 +14,7 @@ Step 3 output (flat under {output_dir}/{ID}/{date}/):
 """
 
 import tkinter as tk
-from tkinter import ttk, filedialog, scrolledtext, messagebox
+from tkinter import ttk, filedialog, scrolledtext, messagebox, simpledialog
 import sys
 import threading
 import os
@@ -399,12 +399,14 @@ def step1_2_preprocess_and_anonymize(input_dir, mode, anonymize, start_id=1, log
             log_fn(f"  Anonymized {count} DICOM files in {os.path.basename(tbase)}")
 
     if anonymize and new_metadata_rows:
+        file_exists = os.path.exists(mapping_csv)
         fieldnames = ["PID", "PatientName", "PatientBirthDate", "PatientSex", "AcquisitionDate", "StudyDate", "ReferringPhysician", "PerformingPhysician", "InstitutionName"]
-        with open(mapping_csv, "w", newline="", encoding="utf-8") as fh:
+        with open(mapping_csv, "a", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(fh, fieldnames=fieldnames)
-            writer.writeheader()
+            if not file_exists:
+                writer.writeheader()
             writer.writerows(new_metadata_rows)
-        log_fn(f"\n  CSV mapping updated → {mapping_csv}")
+        log_fn(f"\n  CSV mapping updated (appended) → {mapping_csv}")
 
     log_fn("\n✓ Step 1 & 2 done.")
     
@@ -839,7 +841,20 @@ class App(tk.Tk):
 
     def _on_anon_toggle(self):
         if self.var_anon.get():
-            self.entry_start_id.config(state="normal")
+            val = simpledialog.askinteger(
+                "Start ID", 
+                "Enter the starting ID for anonymization:",
+                parent=self,
+                initialvalue=self.var_start_id.get(),
+                minvalue=1
+            )
+            if val is not None:
+                self.var_start_id.set(val)
+                self.entry_start_id.config(state="normal")
+            else:
+                # User cancelled, untick
+                self.var_anon.set(False)
+                self.entry_start_id.config(state="disabled")
         else:
             self.entry_start_id.config(state="disabled")
 

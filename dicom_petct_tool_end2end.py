@@ -2,13 +2,12 @@
 """
 DICOM PET/CT → NIfTI Converter
 
-Three-step pipeline:
-  Step 1  Group DICOM files by filename prefix (in-place on input dir)
-  Step 2  Anonymize (optional) + write metadata.json per patient-exam folder
-  Step 3  Convert grouped DICOMs to NIfTI (one file per Step-1 subdir prefix)
+Two-step pipeline:
+  Step 1  Preprocess & Anonymize: Group DICOM files by prefix + Anonymize (optional)
+  Step 2  Convert to NIfTI: Convert grouped DICOMs to NIfTI
           + patient_mapping.csv
 
-Step 3 output (flat under {output_dir}/{ID}/{date}/):
+Step 2 output (flat under {output_dir}/{ID}/{date}/):
   {ID}_{date}_{PREFIX}.nii.gz       - CT or PET, one per Step-1 subdir
   {ID}_{date}_{PREFIX}_SUV.nii.gz   - SUV (only for PET subdirs)
 """
@@ -198,11 +197,11 @@ def detect_modality_from_dir(dir_path):
     return "UN"
 
 # ---------------------------------------------------------------------------
-# Step 1 & 2: Preprocess & Anonymize
+# Step 1: Preprocess & Anonymize
 # ---------------------------------------------------------------------------
 
-def step1_2_preprocess_and_anonymize(input_dir, mode, anonymize, start_id=1, log_fn=print):
-    log_fn(f"\n=== Step 1 & 2: Preprocess & Anonymize (Anonymize={anonymize}) ===")
+def step1_preprocess_and_anonymize(input_dir, mode, anonymize, start_id="0001", log_fn=print):
+    log_fn(f"\n=== Step 1: Preprocess & Anonymize (Anonymize={anonymize}) ===")
     input_dir_path = os.path.abspath(input_dir)
     
     if mode == "single":
@@ -242,18 +241,21 @@ def step1_2_preprocess_and_anonymize(input_dir, mode, anonymize, start_id=1, log
         except Exception as e:
             log_fn(f"  [WARN] Could not read {mapping_csv}: {e}")
 
-    num_digits = 4
-    if mode == "batch" and anonymize:
-        num_digits = max(4, len(str(start_id + len(exam_dirs))))
-    else:
-        num_digits = max(4, len(str(start_id)))
+    # Determine padding from start_id length
+    try:
+        start_id_str = str(start_id)
+        num_digits = len(start_id_str)
+        start_val = int(start_id_str)
+    except ValueError:
+        num_digits = 4
+        start_val = 1
 
     movement_plan = []
     new_patients = {}
     new_metadata_rows = []
     target_bases_set = set()
     
-    current_id = start_id - 1
+    current_id = start_val - 1
     
     for folder in exam_dirs:
         folder_base = os.path.basename(folder)
@@ -408,21 +410,21 @@ def step1_2_preprocess_and_anonymize(input_dir, mode, anonymize, start_id=1, log
             writer.writerows(new_metadata_rows)
         log_fn(f"\n  CSV mapping updated (appended) → {mapping_csv}")
 
-    log_fn("\n✓ Step 1 & 2 done.")
+    log_fn("\n✓ Step 1 done.")
     
     if mode == "single" and len(target_bases_set) == 1:
         return list(target_bases_set)[0]
     return None
 
 # ---------------------------------------------------------------------------
-# Step 3: Convert to NIfTI (CT, PET, SUV)
+# Step 2: Convert to NIfTI (CT, PET, SUV)
 # ---------------------------------------------------------------------------
 
-def step3_convert_to_nifti(
+def step2_convert_to_nifti(
     input_dir, output_dir, mode, log_fn=print, progress_fn=None, cancel_event=None,
 ):
-    """Step 3 entry point. Converts NIfTI to a separate output directory."""
-    log_fn(f"\n=== Step 3: Convert to NIfTI → {output_dir} ===")
+    """Step 2 entry point. Converts NIfTI to a separate output directory."""
+    log_fn(f"\n=== Step 2: Convert to NIfTI → {output_dir} ===")
     input_dir_path = os.path.abspath(input_dir)
     
     if mode == "single":
@@ -531,7 +533,7 @@ def step3_convert_to_nifti(
         if progress_fn:
             progress_fn(idx / total * 100)
 
-    log_fn("\n✓ Step 3 done.")
+    log_fn("\n✓ Step 2 done.")
 
 
 # ---------------------------------------------------------------------------
@@ -708,8 +710,8 @@ class App(tk.Tk):
             side="right", padx=6, pady=6,
         )
 
-        # Step 1 & 2
-        frm1 = ttk.LabelFrame(self, text="Step 1 & 2 — Preprocess & Anonymize")
+        # Step 1
+        frm1 = ttk.LabelFrame(self, text="Step 1 — Preprocess & Anonymize")
         frm1.pack(fill="x", padx=8, pady=4)
         
         self.var_anon = tk.BooleanVar(value=False)
@@ -723,7 +725,7 @@ class App(tk.Tk):
         sub1 = ttk.Frame(frm1)
         sub1.pack(fill="x", padx=10, pady=(0, 2))
         ttk.Label(sub1, text="Start ID:").pack(side="left")
-        self.var_start_id = tk.IntVar(value=1)
+        self.var_start_id = tk.StringVar(value="0001")
         self.entry_start_id = ttk.Entry(sub1, textvariable=self.var_start_id, width=10, state="disabled")
         self.entry_start_id.pack(side="left", padx=4)
         
@@ -735,12 +737,12 @@ class App(tk.Tk):
         ).pack(anchor="w", padx=10, pady=(6, 2))
         
         self.btn_step1 = ttk.Button(
-            frm1, text="▶ Run Step 1 & 2", command=self._run_step1, width=18,
+            frm1, text="▶ Run Step 1", command=self._run_step1, width=18,
         )
         self.btn_step1.pack(anchor="w", padx=10, pady=(4, 8))
 
-        # Step 3
-        frm3 = ttk.LabelFrame(self, text="Step 3 — Convert to NIfTI")
+        # Step 2
+        frm3 = ttk.LabelFrame(self, text="Step 2 — Convert to NIfTI")
         frm3.pack(fill="x", padx=8, pady=4)
         ttk.Label(
             frm3,
@@ -760,10 +762,10 @@ class App(tk.Tk):
             side="left", padx=(4, 0),
         )
 
-        self.btn_step3 = ttk.Button(
-            frm3, text="▶ Run Step 3", command=self._run_step3, width=18,
+        self.btn_step2 = ttk.Button(
+            frm3, text="▶ Run Step 2", command=self._run_step2, width=18,
         )
-        self.btn_step3.pack(anchor="w", padx=10, pady=(2, 8))
+        self.btn_step2.pack(anchor="w", padx=10, pady=(2, 8))
 
         # Progress + status
         self.progress = ttk.Progressbar(self, length=100, mode="determinate")
@@ -841,12 +843,11 @@ class App(tk.Tk):
 
     def _on_anon_toggle(self):
         if self.var_anon.get():
-            val = simpledialog.askinteger(
+            val = simpledialog.askstring(
                 "Start ID", 
-                "Enter the starting ID for anonymization:",
+                "Enter the starting ID (e.g., 0001):",
                 parent=self,
-                initialvalue=self.var_start_id.get(),
-                minvalue=1
+                initialvalue=self.var_start_id.get()
             )
             if val is not None:
                 self.var_start_id.set(val)
@@ -867,7 +868,7 @@ class App(tk.Tk):
 
     def _set_buttons(self, state):
         self.btn_step1.config(state=state)
-        self.btn_step3.config(state=state)
+        self.btn_step2.config(state=state)
 
     def _run_in_thread(self, task_fn):
         if self._running:
@@ -910,12 +911,11 @@ class App(tk.Tk):
             return
 
         def task():
-            try:
-                start_id = self.var_start_id.get()
-            except tk.TclError:
-                start_id = 1
+            start_id = self.var_start_id.get()
+            if not start_id:
+                start_id = "0001"
                 
-            res = step1_2_preprocess_and_anonymize(
+            res = step1_preprocess_and_anonymize(
                 d, self.var_mode.get(), self.var_anon.get(), start_id=start_id, log_fn=self._log_async
             )
             if res and self.var_mode.get() == "single":
@@ -923,7 +923,7 @@ class App(tk.Tk):
 
         self._run_in_thread(task)
 
-    def _run_step3(self):
+    def _run_step2(self):
         d = self._validate_input()
         if not d:
             return
@@ -947,7 +947,7 @@ class App(tk.Tk):
             return
 
         def task():
-            step3_convert_to_nifti(
+            step2_convert_to_nifti(
                 d, out, self.var_mode.get(),
                 log_fn=self._log_async,
                 progress_fn=self._progress_async,

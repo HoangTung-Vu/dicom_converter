@@ -25,4 +25,4 @@ if ! conda env list | grep -q "^${ENV_NAME} "; then
 fi
 
 conda activate "$ENV_NAME"
-python "$SCRIPT_DIR/dicom_petct_tool.py"
+python "$SCRIPT_DIR/dicom_petct_tool_end2end.py"

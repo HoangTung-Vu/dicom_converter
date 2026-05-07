@@ -737,7 +737,7 @@ class App(tk.Tk):
         self.var_anon = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             frm1,
-            text="Anonymize DICOM (xóa PII tags + ghi PatientName/ID = PID — ghi đè in-place)",
+            text="Anonymize DICOM (xóa PHI tags + ghi PatientName/ID = ID — ghi đè in-place)",
             variable=self.var_anon,
             command=self._on_anon_toggle
         ).pack(anchor="w", padx=10, pady=(6, 2))

@@ -1,0 +1,149 @@
+name: Build EXE and DEB
+
+# Builds dicom_folder_converter.py into:
+#   - Windows: DicomFolderConverter.exe            (single file, dcm2niix bundled)
+#   - Linux:   dicom-folder-converter_<ver>_amd64.deb (dcm2niix bundled)
+# on every push. Pushing a tag "vX.Y.Z" also publishes a GitHub Release.
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  APP_SCRIPT: dicom_folder_converter.py
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller numpy "pydicom>=2.4" "nibabel>=5.0"
+
+      - name: Download dcm2niix
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/rordenlab/dcm2niix/releases/latest/download/dcm2niix_win.zip" -OutFile dcm2niix_win.zip
+          Expand-Archive dcm2niix_win.zip -DestinationPath d2n
+          Copy-Item (Get-ChildItem d2n -Recurse -Filter dcm2niix.exe | Select-Object -First 1).FullName dcm2niix.exe
+
+      - name: Build EXE
+        run: >
+          pyinstaller --noconfirm --onefile --windowed
+          --name DicomFolderConverter
+          --add-binary "dcm2niix.exe;."
+          --collect-submodules pydicom
+          ${{ env.APP_SCRIPT }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DicomFolderConverter-windows
+          path: dist/DicomFolderConverter.exe
+          if-no-files-found: error
+
+  linux-deb:
+    # Build on the oldest supported Ubuntu so the binary runs on newer glibc too.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller numpy "pydicom>=2.4" "nibabel>=5.0"
+          python -c "import tkinter; print('tk', tkinter.TkVersion)"
+
+      - name: Download dcm2niix
+        run: |
+          curl -fsSL -o dcm2niix_lnx.zip https://github.com/rordenlab/dcm2niix/releases/latest/download/dcm2niix_lnx.zip
+          unzip -o dcm2niix_lnx.zip -d d2n
+          cp "$(find d2n -type f -name dcm2niix | head -1)" ./dcm2niix
+          chmod +x dcm2niix
+
+      - name: Build binary
+        run: >
+          pyinstaller --noconfirm --onefile --windowed
+          --name dicom-folder-converter
+          --add-binary "dcm2niix:."
+          --collect-submodules pydicom
+          ${{ env.APP_SCRIPT }}
+
+      - name: Smoke test
+        run: ./dist/dicom-folder-converter --check-deps
+
+      - name: Compute version
+        id: ver
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VER="${GITHUB_REF#refs/tags/v}"
+          else
+            VER="0.1.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+
+      - name: Build .deb
+        run: |
+          APP=dicom-folder-converter
+          VER=${{ steps.ver.outputs.version }}
+          PKG="${APP}_${VER}_amd64"
+          mkdir -p "$PKG/DEBIAN" "$PKG/usr/bin" "$PKG/usr/share/applications"
+          install -m 0755 "dist/${APP}" "$PKG/usr/bin/${APP}"
+          cat > "$PKG/usr/share/applications/${APP}.desktop" <<EOF
+          [Desktop Entry]
+          Name=DICOM PET/CT Folder Converter
+          Comment=Convert DICOM PET/CT folders to a NIfTI database
+          Exec=/usr/bin/${APP}
+          Icon=applications-science
+          Terminal=false
+          Type=Application
+          Categories=Science;MedicalSoftware;
+          EOF
+          cat > "$PKG/DEBIAN/control" <<EOF
+          Package: ${APP}
+          Version: ${VER}
+          Section: science
+          Priority: optional
+          Architecture: amd64
+          Recommends: zenity
+          Maintainer: ${{ github.repository_owner }} <noreply@github.com>
+          Description: DICOM PET/CT folder to NIfTI database converter
+           Converts DICOM folders (0000 = CT, 0001 = PET) to CT/PET/SUV NIfTI
+           files with a metadata.csv database. dcm2niix is bundled.
+          EOF
+          dpkg-deb --root-owner-group --build "$PKG"
+          dpkg-deb --info "${PKG}.deb"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dicom-folder-converter-deb
+          path: "*.deb"
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows-exe, linux-deb]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*

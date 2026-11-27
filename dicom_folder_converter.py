@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """
-DICOM folder (0000 = CT, 0001 = PET) → NIfTI database converter.
+DICOM PET/CT folder → NIfTI database converter.
 
 Input layout
 ------------
     <DICOM folder>/            e.g. DICOM_P26235346
-        0000/   *.dcm          CT series
-        0001/   *.dcm          PET series
-        0002/   ...            ignored (any other series folder is ignored)
+        <any>/  *.dcm          series folders, any names, any depth
+
+Series are identified by the DICOM Modality tag, not by folder name:
+Modality CT → *_CT.nii.gz, Modality PT → *_PET.nii.gz (+ *_SUV.nii.gz).
+If several series share a modality, CT skips localizers and takes the one
+with the most files; PET prefers attenuation-corrected, then most files.
+The CT must have the same PatientID as the PET. Other series are ignored.
 
 Output layout ("database")
 --------------------------
@@ -76,8 +80,6 @@ except ImportError:
 
 
 METADATA_NAME = "metadata.csv"
-CT_FOLDER = "0000"
-PET_FOLDER = "0001"
 RAND_DIGITS = 4
 
 # Columns placed first in metadata.csv, in this order.
@@ -141,12 +143,60 @@ def _read_header(path, tags=None):
         return None
 
 
-def _read_modality(series_dir):
-    for f in _series_files(series_dir)[:5]:
-        ds = _read_header(f, ["Modality"])
-        if ds is not None and "Modality" in ds:
-            return str(ds.Modality).strip().upper()
-    return ""
+_MODALITY_ALIASES = {"CT": "CT", "PT": "PT", "PET": "PT"}
+_SAMPLE_FILES = 15
+
+
+def _sample(files, n=_SAMPLE_FILES):
+    if len(files) <= n:
+        return files
+    step = (len(files) - 1) / (n - 1)
+    return [files[round(i * step)] for i in range(n)]
+
+
+def _probe_series(series_dir):
+    """Classify a folder from the DICOM tags of a sample of its files.
+
+    Returns a dict (modality, n_files, mixed, localizer, attn_corrected)
+    or None if the folder holds no readable DICOM.
+    """
+    files = _series_files(series_dir)
+    if not files:
+        return None
+    votes = {}
+    localizer = attn = False
+    patient_id = study_uid = ""
+    for f in _sample(files):
+        ds = _read_header(f, ["Modality", "ImageType", "CorrectedImage",
+                                "PatientID", "StudyInstanceUID"])
+        if ds is None or "Modality" not in ds:
+            continue
+        m = str(ds.Modality).strip().upper()
+        votes[m] = votes.get(m, 0) + 1
+        itype = [str(v).upper() for v in (getattr(ds, "ImageType", None) or [])]
+        if "LOCALIZER" in itype:
+            localizer = True
+        corr = getattr(ds, "CorrectedImage", None) or []
+        if isinstance(corr, str):
+            corr = [corr]
+        if any("ATTN" in str(v).upper() for v in corr):
+            attn = True
+        if not patient_id:
+            patient_id = str(getattr(ds, "PatientID", "") or "").strip()
+        if not study_uid:
+            study_uid = str(getattr(ds, "StudyInstanceUID", "") or "").strip()
+    if not votes:
+        return None
+    modality = max(votes, key=votes.get)
+    return {
+        "modality": _MODALITY_ALIASES.get(modality, modality),
+        "n_files": len(files),
+        "mixed": len(votes) > 1,
+        "localizer": localizer,
+        "attn": attn,
+        "patient_id": patient_id,
+        "study_uid": study_uid,
+    }
 
 
 def _scan_series(series_dir):
@@ -173,40 +223,58 @@ def _scan_series(series_dir):
 
 
 def find_ct_pet(exam_dir, log_fn=print):
-    """Locate CT and PET series folders inside one DICOM folder.
+    """Locate the CT and PET series folders inside one DICOM folder.
 
-    Primary rule: 0000 = CT, 0001 = PET. Falls back to the Modality tag of
-    the sub-folders if those names are missing or hold the wrong modality.
+    Folder names are not trusted: every folder under *exam_dir* (any depth,
+    including *exam_dir* itself) that holds DICOM files is classified by its
+    Modality tag (CT / PT). When several series share a modality:
+      CT  : localizer/scout series are skipped, then the most files wins;
+      PET : attenuation-corrected (CorrectedImage contains ATTN) first,
+            then the most files.
+    Returns (ct_dir, pet_dir, ignored) where *ignored* lists the other
+    series folders (relative paths) with their modality.
     """
-    subdirs = sorted(
-        d for d in os.listdir(exam_dir) if os.path.isdir(os.path.join(exam_dir, d))
-    )
-    ct = os.path.join(exam_dir, CT_FOLDER) if CT_FOLDER in subdirs else None
-    pet = os.path.join(exam_dir, PET_FOLDER) if PET_FOLDER in subdirs else None
+    series = []
+    for root, dirs, _files in os.walk(exam_dir):
+        dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+        info = _probe_series(root)
+        if info is None:
+            continue
+        info["path"] = root
+        info["rel"] = os.path.relpath(root, exam_dir)
+        series.append(info)
+        if info["mixed"]:
+            log_fn(f"  [WARN] {info['rel']}: files with different Modality in one folder; "
+                   f"treated as {info['modality']}")
 
-    if ct and _read_modality(ct) not in ("CT", ""):
-        log_fn(f"  [WARN] {CT_FOLDER} is not CT (Modality={_read_modality(ct)}); searching by Modality")
-        ct = None
-    if pet and _read_modality(pet) not in ("PT", ""):
-        log_fn(f"  [WARN] {PET_FOLDER} is not PET (Modality={_read_modality(pet)}); searching by Modality")
-        pet = None
+    def pick(modality, rank):
+        cands = [s for s in series if s["modality"] == modality]
+        return max(cands, key=rank) if cands else None
 
-    if ct is None or pet is None:
-        # Fallback: biggest folder of the wanted modality
-        cands = {"CT": [], "PT": []}
-        for d in subdirs:
-            p = os.path.join(exam_dir, d)
-            m = _read_modality(p)
-            if m in cands:
-                cands[m].append((len(_series_files(p)), p))
-        if ct is None and cands["CT"]:
-            ct = max(cands["CT"])[1]
-        if pet is None and cands["PT"]:
-            pet = max(cands["PT"])[1]
+    pet = pick("PT", lambda s: (s["attn"], s["n_files"]))
+    ct_rank = lambda s: (not s["localizer"], s["n_files"])
+    ct = None
+    if pet is not None:
+        # CT must belong to the same patient as the PET; prefer the same study.
+        same_study = [s for s in series if s["modality"] == "CT" and pet["study_uid"]
+                      and s["study_uid"] == pet["study_uid"]]
+        same_patient = [s for s in series if s["modality"] == "CT"
+                        and s["patient_id"] == pet["patient_id"]]
+        cands = same_study or same_patient
+        if cands:
+            ct = max(cands, key=ct_rank)
+        elif pick("CT", ct_rank) is not None:
+            log_fn("  [WARN] CT series found, but none has the same PatientID as the PET")
+    else:
+        ct = pick("CT", ct_rank)
 
-    used = {os.path.basename(p) for p in (ct, pet) if p}
-    ignored = [d for d in subdirs if d not in used]
-    return ct, pet, ignored
+    for s, label in ((ct, "CT"), (pet, "PET")):
+        if s is not None:
+            log_fn(f"  {label} series: {s['rel']} (Modality={s['modality']}, {s['n_files']} files)")
+
+    chosen = {id(s) for s in (ct, pet) if s is not None}
+    ignored = [f"{s['rel']} ({s['modality']})" for s in series if id(s) not in chosen]
+    return (ct["path"] if ct else None), (pet["path"] if pet else None), ignored
 
 
 def _value_to_str(value):
@@ -418,7 +486,7 @@ def run_dcm2niix(series_dir, out_nii, log_fn=print):
         log_fn("  [ERROR] dcm2niix not found")
         return False
     with tempfile.TemporaryDirectory(prefix="d2n_") as tmp:
-        cmd = [binary, "-z", "y", "-b", "n", "-f", "series", "-o", tmp, series_dir]
+        cmd = [binary, "-z", "y", "-b", "n", "-d", "0", "-f", "series", "-o", tmp, series_dir]
         kwargs = {}
         if sys.platform == "win32":
             kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -843,7 +911,7 @@ def run_gui():
             self.lbl_db.pack(anchor="w", padx=10, pady=(2, 2))
             ttk.Label(
                 frm_out, foreground="gray", justify="left",
-                text="0000 = CT, 0001 = PET (other series folders are ignored).\n"
+                text="CT / PET detected from the DICOM Modality tag (folder names are ignored).\n"
                      "Output: {ID}/{date}{rand}/{ID}_{date}{rand}_CT|PET|SUV.nii.gz + metadata.csv",
             ).pack(anchor="w", padx=10, pady=(0, 6))
 
@@ -904,7 +972,7 @@ def run_gui():
 
         def _browse_input(self):
             title = ("Select directory containing DICOM folders" if self.var_mode.get() == "batch"
-                     else "Select one DICOM folder (with 0000/0001)")
+                     else "Select one DICOM folder (with CT and PET series)")
             d = self._ask_dir(title, self.var_input.get().strip())
             if d:
                 self.var_input.set(d)
@@ -955,7 +1023,7 @@ def run_gui():
                 if not ct or not pet:
                     messagebox.showerror(
                         "Not a DICOM folder",
-                        "Could not find CT (0000) and PET (0001) series in the selected folder.\n"
+                        "Could not find both a CT and a PET series (Modality CT / PT) in the selected folder.\n"
                         "To convert a directory of DICOM folders, choose the first option.")
                     return
 

@@ -121,8 +121,9 @@ jobs:
           Recommends: zenity
           Maintainer: ${{ github.repository_owner }} <noreply@github.com>
           Description: DICOM PET/CT folder to NIfTI database converter
-           Converts DICOM folders (0000 = CT, 0001 = PET) to CT/PET/SUV NIfTI
-           files with a metadata.csv database. dcm2niix is bundled.
+           Converts DICOM PET/CT folders (series detected by the Modality tag)
+           to CT/PET/SUV NIfTI files with a metadata.csv database.
+           dcm2niix is bundled.
           EOF
           dpkg-deb --root-owner-group --build "$PKG"
           dpkg-deb --info "${PKG}.deb"
